@@ -30,6 +30,8 @@ Configure the service by updating the config.toml file or using environment vari
 
 toml
 Copy code
+```
+
 # Example config.toml
 
 [aws]
@@ -70,22 +72,19 @@ AWS_REGION: AWS region for S3 (default: "us-east-1")
 AWS_ACCESS_KEY: AWS access key
 AWS_SECRET_KEY: AWS secret key
 Config File
-You can provide additional details on configuring the service using a configuration file.
-
-Remaining
-Explain any other important aspects of your service or any additional sections you want to highlight.
 
 Contributing
-Explain how others can contribute to your project. Include guidelines for issues, pull requests, and any specific coding standards.
+Explain feel free to raise a PR
 
 Development Setup
 bash
 Copy code
+
 # Clone the repository
-git clone https://github.com/your-username/your-repo.git
+git clone https://github.com/PrognosticatorR/s3_uploader
 
 # Install dependencies
-cd your-repo
+cd s3_uploader
 cargo build
 
 # Run tests
