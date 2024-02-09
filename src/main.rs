@@ -1,6 +1,8 @@
 use actix_web::web::{Bytes, Data};
 use actix_web::{web, App, HttpResponse, HttpServer};
 use anyhow::{Context, Result};
+use log::{error, info};
+use ping;
 use rusoto_core::Region;
 use rusoto_s3::{
     CompleteMultipartUploadRequest, CompletedPart, CreateMultipartUploadRequest, S3Client,
@@ -9,6 +11,7 @@ use rusoto_s3::{
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::io::Read;
+use std::net::ToSocketAddrs;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as timeDuration, Instant};
 use tokio::sync::mpsc;
@@ -20,6 +23,28 @@ const OBJECT_KEY: &str = "your-object-key";
 const REPORT_INTERVAL_SECONDS: u64 = 1; // reduced for testing purposes
 const CHUNK_SIZE: usize = 5 * 1024 * 1024; // 5 MB
 const MAX_CHUNK_UPLOAD_RETRIES: usize = 3;
+const NETWORK_CHECK_INTERVAL_SECONDS: u64 = 10;
+
+async fn is_connected() -> bool {
+    let ip_addr = "8.8.8.8".to_socket_addrs().unwrap().next().unwrap().ip();
+    match ping::ping(
+        ip_addr,
+        Some(Duration::from_secs(2)),
+        None,
+        None,
+        None,
+        None,
+    ) {
+        Ok(()) => {
+            info!("Network is connected.");
+            true
+        }
+        Err(e) => {
+            error!("Error while checking network status: {}", e);
+            false
+        }
+    }
+}
 
 async fn report_progress(progress: Arc<Mutex<usize>>, total_parts: usize) {
     loop {
@@ -129,20 +154,26 @@ async fn upload_to_s3_parallel(
                 let part_checksum = part_hasher.finalize();
 
                 if part_checksum != checksum {
-                    eprintln!("Checksum mismatch for part {} of the file", i + 1);
+                    error!("Checksum mismatch for part {} of the file", i + 1);
                     break;
                 }
 
-                if let Err(e) =
-                    upload_part(&s3_client_clone, &upload_id, chunk.clone(), (i + 1) as i64)
-                        .await
-                        .context(format!("Error during upload (retry {})", retries + 1))
-                {
-                    eprintln!("{}", e);
-                    retries += 1;
-                    time::sleep(Duration::from_secs(1)).await;
+                if is_connected().await {
+                    if let Err(e) =
+                        upload_part(&s3_client_clone, &upload_id, chunk.clone(), (i + 1) as i64)
+                            .await
+                            .context(format!("Error during upload (retry {})", retries + 1))
+                    {
+                        error!("{}", e);
+                        retries += 1;
+                        time::sleep(Duration::from_secs(1)).await;
+                    } else {
+                        success = true;
+                    }
                 } else {
-                    success = true;
+                    // Handle network disconnection
+                    error!("Network disconnected. Retrying upload after network is restored.");
+                    time::sleep(Duration::from_secs(NETWORK_CHECK_INTERVAL_SECONDS)).await;
                 }
             }
 
@@ -174,6 +205,10 @@ async fn upload_to_s3_parallel(
 
     complete_multipart_upload(&s3_client, &upload_id, completed_parts).await?;
     let time_elapsed: timeDuration = time_started.elapsed();
+    info!(
+        "File uploaded successfully! Time taken: {:?} seconds",
+        time_elapsed.as_secs()
+    );
     Ok(HttpResponse::Ok().body(format!(
         "File uploaded successfully! and time taken: {:?} seconds",
         time_elapsed.as_secs()
@@ -182,6 +217,7 @@ async fn upload_to_s3_parallel(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    env_logger::init(); // Initialize logger
     let s3_client = Arc::new(S3Client::new(Region::UsEast1));
     let progress = Arc::new(Mutex::new(0usize));
 
@@ -201,7 +237,7 @@ async fn main() -> std::io::Result<()> {
                             HttpResponse::Ok().body("File uploaded successfully!"),
                         ),
                         Err(e) => {
-                            eprintln!("Error during upload: {}", e);
+                            error!("Error during upload: {}", e);
                             Ok(HttpResponse::InternalServerError().finish())
                         }
                     }
